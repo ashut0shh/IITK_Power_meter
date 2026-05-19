@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Power Monitor — ESP32</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div class="scanlines"></div>
+
+  <header>
+    <div class="header-left">
+      <div class="logo">
+        <svg class="logo-bolt" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+        </svg>
+        <div>
+          <div class="logo-title">POWER MONITOR</div>
+          <div class="logo-sub">ESP32 Energy Station &nbsp;·&nbsp; Phase&nbsp;1&nbsp;Simulated</div>
+        </div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="sim-badge">SIM</div>
+      <div class="live-badge" id="liveBadge">
+        <span class="live-dot"></span>
+        <span class="live-label">LIVE</span>
+      </div>
+      <div class="header-time" id="headerTime">--:--:--</div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- PRIMARY METRICS -->
+    <div class="grid primary-grid">
+
+      <div class="card card-v">
+        <div class="card-tag">01</div>
+        <div class="card-label">VOLTAGE</div>
+        <div class="card-reading">
+          <span class="card-value" id="val-voltage">---.-</span>
+          <span class="card-unit">V</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="bar-voltage"></div></div>
+        <div class="card-meta">
+          <span id="voltage-status" class="meta-status">AC&nbsp;RMS</span>
+          <span class="meta-range">Nominal 230V</span>
+        </div>
+      </div>
+
+      <div class="card card-a">
+        <div class="card-tag">02</div>
+        <div class="card-label">CURRENT</div>
+        <div class="card-reading">
+          <span class="card-value" id="val-current">--.--</span>
+          <span class="card-unit">A</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="bar-current"></div></div>
+        <div class="card-meta">
+          <span class="meta-status">RMS</span>
+          <span class="meta-range">Max 16A</span>
+        </div>
+      </div>
+
+      <div class="card card-w">
+        <div class="card-tag">03</div>
+        <div class="card-label">ACTIVE POWER</div>
+        <div class="card-reading">
+          <span class="card-value" id="val-power">----.--</span>
+          <span class="card-unit">W</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="bar-power"></div></div>
+        <div class="card-meta">
+          <span id="load-pct" class="meta-status">0%&nbsp;load</span>
+          <span class="meta-range">Max 3680W</span>
+        </div>
+      </div>
+
+      <div class="card card-e">
+        <div class="card-tag">04</div>
+        <div class="card-label">ENERGY</div>
+        <div class="card-reading">
+          <span class="card-value" id="val-energy">---.---</span>
+          <span class="card-unit">Wh</span>
+        </div>
+        <div class="bar-track" style="visibility:hidden"><div class="bar-fill"></div></div>
+        <div class="card-meta">
+          <span class="meta-status">Session&nbsp;total</span>
+          <span class="meta-range" id="energy-kwh">0.000 kWh</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SECONDARY METRICS -->
+    <div class="grid secondary-grid">
+
+      <div class="card card-sm card-f">
+        <div class="card-label">FREQUENCY</div>
+        <div class="card-reading sm">
+          <span class="card-value sm" id="val-freq">--.-</span>
+          <span class="card-unit sm">Hz</span>
+        </div>
+        <div class="card-note">Grid AC freq</div>
+      </div>
+
+      <div class="card card-sm card-pf">
+        <div class="card-label">POWER FACTOR</div>
+        <div class="card-reading sm">
+          <span class="card-value sm" id="val-pf">0.--</span>
+          <span class="card-unit sm">PF</span>
+        </div>
+        <div class="card-note">cos φ</div>
+      </div>
+
+      <div class="card card-sm card-ap">
+        <div class="card-label">APPARENT POWER</div>
+        <div class="card-reading sm">
+          <span class="card-value sm" id="val-apparent">----</span>
+          <span class="card-unit sm">VA</span>
+        </div>
+        <div class="card-note">V × A</div>
+      </div>
+
+      <div class="card card-sm card-up">
+        <div class="card-label">UPTIME</div>
+        <div class="card-reading sm">
+          <span class="card-value sm" id="val-uptime">--:--:--</span>
+        </div>
+        <div class="card-note" id="sys-status">System nominal</div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- Disconnect overlay -->
+  <div class="overlay" id="overlay">
+    <div class="overlay-box">
+      <div class="overlay-icon">⚠</div>
+      <div class="overlay-title">CONNECTION LOST</div>
+      <div class="overlay-msg">Attempting to reconnect to ESP32…</div>
+      <div class="overlay-spin"></div>
+    </div>
+  </div>
+
+  <footer>
+    <span>ESP32&nbsp;Power&nbsp;Monitor&nbsp;— Phase&nbsp;1&nbsp;·&nbsp;Simulated&nbsp;Telemetry</span>
+    <span id="footer-info">polling /api/telemetry · 1s interval</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
