@@ -2,7 +2,7 @@
 //  ESP32 Power Monitor — Multi-Tenant Alexa Skill Backend
 //  Architecture:
 //    Alexa → extracts amazonUserId
-//    → lookup /users/{safeKey(amazonUserId)}/deviceId in Firebase
+//    → lookup /users/{amazonUserId}/deviceId in Firebase
 //    → read /devices/{deviceId}/telemetry
 //    → read /devices/{deviceId}/config/params
 //    → speak only enabled params
@@ -23,24 +23,11 @@ admin.initializeApp({
 
 const db = admin.database();
 
-// ── Safe Firebase key ─────────────────────────────────────────
-// Firebase path keys cannot contain: . # $ [ ]
-// Base64-encode the Amazon userId and strip those chars,
-// then truncate to 60 chars.
-// register_user.js uses the IDENTICAL function — keys must match.
-function safeKey(userId) {
-  return Buffer.from(userId)
-    .toString('base64')
-    .replace(/[.#$[\]]/g, '_')
-    .substring(0, 60);
-}
-
 // ── Firebase Helpers ─────────────────────────────────────────
 
 // Get the device ID that belongs to this Amazon user
 async function getDeviceId(amazonUserId) {
-  const key = safeKey(amazonUserId);
-  const snap = await db.ref(`/users/${key}/deviceId`).once('value');
+  const snap = await db.ref(`/users/${amazonUserId}/deviceId`).once('value');
   return snap.val(); // e.g. "esp32_7A34B1" or null if not registered
 }
 
@@ -115,7 +102,7 @@ function speakParam(param, tel) {
   }
 }
 
-// ── Error speech helpers ──────────────────────────────────────
+// ── Error speech helper ───────────────────────────────────────
 function notRegisteredSpeech() {
   return `Your Amazon account is not linked to any device. 
           Please register your ESP32 using the setup app, then try again.`;
@@ -286,6 +273,7 @@ const GetAllHandler = {
 
     const { tel, params } = result;
 
+    // Speak params in a logical order, only if enabled
     const ORDER = ['voltage', 'current', 'power', 'apparent_power', 'pf', 'frequency', 'energy', 'uptime'];
     const parts = ['Full report.'];
     for (const param of ORDER) {
@@ -353,21 +341,16 @@ const skill = Alexa.SkillBuilders.custom()
 const app     = express();
 const adapter = new ExpressAdapter(skill, true, true);
 
-app.use(express.json());
-
 app.post('/alexa', adapter.getRequestHandlers());
 
 app.get('/', (req, res) => {
   res.send('ESP32 Power Monitor — Multi-Tenant Alexa Backend ✓');
 });
 
-// Health check — used by register_user.js to wake the server
-app.get('/health', (req, res) => {
-  res.json({ ok: true });
-});
-
-// ── Admin: register a user ────────────────────────────────────
+// ── Admin: register a user (call this once per new user) ──────
 // POST /admin/register  { amazonUserId, deviceId, ownerName }
+// Protect this route with a secret header in production
+app.use(express.json());
 app.post('/admin/register', async (req, res) => {
   const secret = req.headers['x-admin-secret'];
   if (secret !== process.env.ADMIN_SECRET) {
@@ -379,19 +362,16 @@ app.post('/admin/register', async (req, res) => {
     return res.status(400).json({ error: 'amazonUserId and deviceId required' });
   }
 
-  const key = safeKey(amazonUserId);
-  console.log(`[Register] ${ownerName || 'unknown'} → key=${key} → device=${deviceId}`);
-
-  await db.ref(`/users/${key}`).set({ deviceId });
+  await db.ref(`/users/${amazonUserId}`).set({ deviceId });
   await db.ref(`/devices/${deviceId}/config`).set({
     ownerName: ownerName || '',
     params: ['voltage', 'current', 'power', 'apparent_power', 'energy', 'frequency', 'pf', 'uptime']
   });
 
-  res.json({ success: true, mapped: `${key} → ${deviceId}` });
+  res.json({ success: true, mapped: `${amazonUserId} → ${deviceId}` });
 });
 
-// ── Admin: update enabled params for a device ─────────────────
+// Admin: update enabled params for a device
 // POST /admin/params  { deviceId, params: ["voltage","power",...] }
 app.post('/admin/params', async (req, res) => {
   const secret = req.headers['x-admin-secret'];
