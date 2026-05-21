@@ -2,7 +2,7 @@
 //  ESP32 Power Monitor — Multi-Tenant Alexa Skill Backend
 //  Architecture:
 //    Alexa → extracts amazonUserId
-//    → lookup /users/{amazonUserId}/deviceId in Firebase
+//    → lookup /users/{safeKey(amazonUserId)}/deviceId in Firebase
 //    → read /devices/{deviceId}/telemetry
 //    → read /devices/{deviceId}/config/params
 //    → speak only enabled params
@@ -23,28 +23,36 @@ admin.initializeApp({
 
 const db = admin.database();
 
-// ── Firebase Helpers ─────────────────────────────────────────
-
-// Get the device ID that belongs to this Amazon user
-async function getDeviceId(amazonUserId) {
-  const snap = await db.ref(`/users/${amazonUserId}/deviceId`).once('value');
-  return snap.val(); // e.g. "esp32_7A34B1" or null if not registered
+// ── Safe Firebase key ─────────────────────────────────────────
+// Firebase path keys cannot contain: . # $ [ ]
+// Base64-encode the Amazon userId and strip those chars,
+// then truncate to 60 chars.
+// register_user.js uses the IDENTICAL function — keys must match.
+function safeKey(userId) {
+  return Buffer.from(userId)
+    .toString('base64')
+    .replace(/[.#$[\]]/g, '_')
+    .substring(0, 60);
 }
 
-// Get live telemetry for a device
+// ── Firebase Helpers ─────────────────────────────────────────
+
+async function getDeviceId(amazonUserId) {
+  const key = safeKey(amazonUserId);
+  const snap = await db.ref(`/users/${key}/deviceId`).once('value');
+  return snap.val();
+}
+
 async function getTelemetry(deviceId) {
   const snap = await db.ref(`/devices/${deviceId}/telemetry`).once('value');
   return snap.val();
 }
 
-// Get the list of enabled params for a device
-// Falls back to all params if config not set
 async function getEnabledParams(deviceId) {
   const snap = await db.ref(`/devices/${deviceId}/config/params`).once('value');
   return snap.val() || ['voltage', 'current', 'power', 'energy', 'frequency', 'pf', 'apparent_power'];
 }
 
-// Get device owner name for personalised responses
 async function getOwnerName(deviceId) {
   const snap = await db.ref(`/devices/${deviceId}/config/ownerName`).once('value');
   return snap.val() || null;
@@ -62,7 +70,6 @@ async function resolveUser(amazonUserId) {
   ]);
 
   if (!tel) return { error: 'no_data', deviceId };
-
   return { deviceId, tel, params, ownerName };
 }
 
@@ -78,49 +85,33 @@ function fmtUptime(s) {
   return `${s % 60} seconds`;
 }
 
-// Build a speech string for a single param
 function speakParam(param, tel) {
   switch (param) {
-    case 'voltage':
-      return `Voltage is ${r1(tel.voltage)} volts.`;
-    case 'current':
-      return `Current is ${r2(tel.current)} amperes.`;
-    case 'power':
-      return `Active power is ${r1(tel.power)} watts.`;
-    case 'apparent_power':
-      return `Apparent power is ${r1(tel.apparent_power)} volt-amperes.`;
-    case 'energy':
-      return `Energy used is ${r2(tel.energy)} watt-hours, or ${r2(tel.energy / 1000)} kilowatt-hours.`;
-    case 'frequency':
-      return `Grid frequency is ${r2(tel.frequency)} hertz.`;
-    case 'pf':
-      return `Power factor is ${r2(tel.pf)}.`;
-    case 'uptime':
-      return `Device uptime is ${fmtUptime(tel.uptime)}.`;
-    default:
-      return '';
+    case 'voltage':       return `Voltage is ${r1(tel.voltage)} volts.`;
+    case 'current':       return `Current is ${r2(tel.current)} amperes.`;
+    case 'power':         return `Active power is ${r1(tel.power)} watts.`;
+    case 'apparent_power':return `Apparent power is ${r1(tel.apparent_power)} volt-amperes.`;
+    case 'energy':        return `Energy used is ${r2(tel.energy)} watt-hours, or ${r2(tel.energy / 1000)} kilowatt-hours.`;
+    case 'frequency':     return `Grid frequency is ${r2(tel.frequency)} hertz.`;
+    case 'pf':            return `Power factor is ${r2(tel.pf)}.`;
+    case 'uptime':        return `Device uptime is ${fmtUptime(tel.uptime)}.`;
+    default:              return '';
   }
 }
 
-// ── Error speech helper ───────────────────────────────────────
+// ── Error speech helpers ──────────────────────────────────────
 function notRegisteredSpeech() {
-  return `Your Amazon account is not linked to any device. 
-          Please register your ESP32 using the setup app, then try again.`;
+  return 'Your Amazon account is not linked to any device. Please register your ESP32 using the setup app, then try again.';
 }
-
 function noDataSpeech() {
-  return `Your device is registered but not sending data right now. 
-          Please check that your ESP32 is powered on and connected to WiFi.`;
+  return 'Your device is registered but not sending data right now. Please check that your ESP32 is powered on and connected to WiFi.';
 }
-
 function paramNotEnabled(param) {
-  return `${param} is not enabled for your device. 
-          Ask your administrator to add it to your device config.`;
+  return `${param} is not enabled for your device. Ask your administrator to add it to your device config.`;
 }
 
 // ── Intent Handlers ───────────────────────────────────────────
 
-// LaunchRequest — summary on open
 const LaunchHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'LaunchRequest';
@@ -128,13 +119,8 @@ const LaunchHandler = {
   async handle(input) {
     const userId = input.requestEnvelope.context.System.user.userId;
     const result = await resolveUser(userId);
-
-    if (result.error === 'not_registered') {
-      return input.responseBuilder.speak(notRegisteredSpeech()).getResponse();
-    }
-    if (result.error === 'no_data') {
-      return input.responseBuilder.speak(noDataSpeech()).getResponse();
-    }
+    if (result.error === 'not_registered') return input.responseBuilder.speak(notRegisteredSpeech()).getResponse();
+    if (result.error === 'no_data')        return input.responseBuilder.speak(noDataSpeech()).getResponse();
 
     const { tel, params, ownerName } = result;
     const greeting = ownerName ? `Hello ${ownerName}. ` : '';
@@ -144,7 +130,6 @@ const LaunchHandler = {
     if (params.includes('current')) summary.push(`${r2(tel.current)} amps`);
 
     const speech = `${greeting}Power monitor online. Current readings: ${summary.join(', ')}. What would you like to know?`;
-
     return input.responseBuilder
       .speak(speech)
       .reprompt('You can ask for power, voltage, current, energy, frequency, or a full report.')
@@ -152,7 +137,6 @@ const LaunchHandler = {
   }
 };
 
-// GetPowerIntent
 const GetPowerHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -170,12 +154,10 @@ const GetPowerHandler = {
     let speech = speakParam('power', tel);
     if (params.includes('apparent_power')) speech += ' ' + speakParam('apparent_power', tel);
     if (params.includes('pf'))             speech += ' ' + speakParam('pf', tel);
-
     return input.responseBuilder.speak(speech).getResponse();
   }
 };
 
-// GetVoltageIntent
 const GetVoltageHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -194,12 +176,10 @@ const GetVoltageHandler = {
     const status = v < 210 || v > 250 ? ' Warning: voltage is outside safe range!'
                  : v < 220 || v > 240 ? ' Voltage is slightly out of nominal range.'
                  : ' Voltage is nominal.';
-
     return input.responseBuilder.speak(`Voltage is ${v} volts.${status}`).getResponse();
   }
 };
 
-// GetCurrentIntent
 const GetCurrentHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -213,12 +193,10 @@ const GetCurrentHandler = {
 
     const { tel, params } = result;
     if (!params.includes('current')) return input.responseBuilder.speak(paramNotEnabled('current')).getResponse();
-
     return input.responseBuilder.speak(speakParam('current', tel)).getResponse();
   }
 };
 
-// GetEnergyIntent
 const GetEnergyHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -232,12 +210,10 @@ const GetEnergyHandler = {
 
     const { tel, params } = result;
     if (!params.includes('energy')) return input.responseBuilder.speak(paramNotEnabled('energy')).getResponse();
-
     return input.responseBuilder.speak(speakParam('energy', tel)).getResponse();
   }
 };
 
-// GetFrequencyIntent
 const GetFrequencyHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -254,12 +230,10 @@ const GetFrequencyHandler = {
 
     let speech = speakParam('frequency', tel);
     if (params.includes('pf')) speech += ' ' + speakParam('pf', tel);
-
     return input.responseBuilder.speak(speech).getResponse();
   }
 };
 
-// GetAllIntent — only speaks enabled params
 const GetAllHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -272,21 +246,15 @@ const GetAllHandler = {
     if (result.error === 'no_data')        return input.responseBuilder.speak(noDataSpeech()).getResponse();
 
     const { tel, params } = result;
-
-    // Speak params in a logical order, only if enabled
     const ORDER = ['voltage', 'current', 'power', 'apparent_power', 'pf', 'frequency', 'energy', 'uptime'];
     const parts = ['Full report.'];
     for (const param of ORDER) {
-      if (params.includes(param)) {
-        parts.push(speakParam(param, tel));
-      }
+      if (params.includes(param)) parts.push(speakParam(param, tel));
     }
-
     return input.responseBuilder.speak(parts.join(' ')).getResponse();
   }
 };
 
-// Help
 const HelpHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -300,7 +268,6 @@ const HelpHandler = {
   }
 };
 
-// Cancel / Stop
 const CancelStopHandler = {
   canHandle(input) {
     return Alexa.getRequestType(input.requestEnvelope) === 'IntentRequest'
@@ -312,7 +279,6 @@ const CancelStopHandler = {
   }
 };
 
-// Error handler
 const ErrorHandler = {
   canHandle() { return true; },
   handle(input, error) {
@@ -341,16 +307,25 @@ const skill = Alexa.SkillBuilders.custom()
 const app     = express();
 const adapter = new ExpressAdapter(skill, true, true);
 
+// CRITICAL: /alexa MUST be registered BEFORE express.json().
+// The Alexa SDK needs the raw request body to verify the signature.
+// express.json() would parse and consume the body first, breaking verification.
 app.post('/alexa', adapter.getRequestHandlers());
+
+// express.json() only applies to routes below this line (admin routes)
+app.use(express.json());
 
 app.get('/', (req, res) => {
   res.send('ESP32 Power Monitor — Multi-Tenant Alexa Backend ✓');
 });
 
-// ── Admin: register a user (call this once per new user) ──────
+// Health check — used by register_user.js to wake the server
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+// ── Admin: register a user ────────────────────────────────────
 // POST /admin/register  { amazonUserId, deviceId, ownerName }
-// Protect this route with a secret header in production
-app.use(express.json());
 app.post('/admin/register', async (req, res) => {
   const secret = req.headers['x-admin-secret'];
   if (secret !== process.env.ADMIN_SECRET) {
@@ -362,16 +337,19 @@ app.post('/admin/register', async (req, res) => {
     return res.status(400).json({ error: 'amazonUserId and deviceId required' });
   }
 
-  await db.ref(`/users/${amazonUserId}`).set({ deviceId });
+  const key = safeKey(amazonUserId);
+  console.log(`[Register] ${ownerName || 'unknown'} → key=${key} → device=${deviceId}`);
+
+  await db.ref(`/users/${key}`).set({ deviceId });
   await db.ref(`/devices/${deviceId}/config`).set({
     ownerName: ownerName || '',
     params: ['voltage', 'current', 'power', 'apparent_power', 'energy', 'frequency', 'pf', 'uptime']
   });
 
-  res.json({ success: true, mapped: `${amazonUserId} → ${deviceId}` });
+  res.json({ success: true, mapped: `${key} → ${deviceId}` });
 });
 
-// Admin: update enabled params for a device
+// ── Admin: update enabled params for a device ─────────────────
 // POST /admin/params  { deviceId, params: ["voltage","power",...] }
 app.post('/admin/params', async (req, res) => {
   const secret = req.headers['x-admin-secret'];
